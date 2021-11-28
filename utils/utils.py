@@ -44,13 +44,14 @@ class AR_MLP(torch.nn.Module):
     self.fc_3 = torch.nn.Linear(20, num_classes)
     self.act = torch.nn.ReLU()
     self.dropout = torch.nn.Dropout(p=drop, inplace=False)
+    self.soft = torch.nn.Softmax(dim=0)
 
   def forward(self, x):
     x = self.act(self.fc_1(x))
     x = self.dropout(x)
     x = self.act(self.fc_2(x))
-    x = self.dropout(x)
-    return self.fc_3(x).squeeze(dim=1)
+    # return self.soft(self.fc_3(x))
+    return self.fc_3(x)
 
 class Embedding_MLP(torch.nn.Module):
   def __init__(self, memory_dim, embedding_dim, house_state_dim, drop=0.3):
@@ -74,20 +75,22 @@ class TemporalAttentionLayer(torch.nn.Module):
    its neighbors and the edge timestamps.
   """
 
-  def __init__(self, n_node_features, n_neighbors_features, n_edge_features, time_dim,
-               output_dimension, n_head=2,
+  # memory dim, house state dim, time_dim
+
+  def __init__(self, memory_dim, house_state_dim, house_time_dim, time_dim, n_head=2,
                dropout=0.1):
     super(TemporalAttentionLayer, self).__init__()
 
     self.n_head = n_head
 
-    self.feat_dim = n_node_features
+    self.feat_dim = house_state_dim
     self.time_dim = time_dim
+    self.house_time_dim = time_dim
 
-    self.query_dim = n_node_features + time_dim
-    self.key_dim = n_neighbors_features + time_dim + n_edge_features
+    self.query_dim = house_state_dim + house_time_dim
+    self.key_dim = memory_dim + time_dim 
 
-    self.merger = MergeLayer(self.query_dim, n_node_features, n_node_features, output_dimension)
+    self.merger = MergeLayer(self.query_dim, house_state_dim, house_state_dim, house_state_dim)
 
     self.multi_head_target = nn.MultiheadAttention(embed_dim=self.query_dim,
                                                    kdim=self.key_dim,
@@ -95,28 +98,32 @@ class TemporalAttentionLayer(torch.nn.Module):
                                                    num_heads=n_head,
                                                    dropout=dropout)
 
-  def forward(self, house_state, house_time_features, sensors_features,
+
+  def forward(self, house_state, house_time_features, memories,
             sensors_time_features):
     """
     "Temporal attention model
+    
+    # temporal encoding of current time
     # batch size always 1 b/c there's only 1 house
     :param house_state: float Tensor of shape [batch_size, house_state_dim] 
-
-    # temporal encoding of current time
-    :param house_time_features: float Tensor of shape [batch_size, 1, time_dim] 
-    :param neighbors_features: float Tensor of shape [batch_size, n_sensors, n_node_features]
-    :param neighbors_time_features: float Tensor of shape [batch_size, n_neighbors, time_dim]
-    :param edge_features: float Tensor of shape [batch_size, n_neighbors, n_edge_features]
-    :param neighbors_padding_mask: float Tensor of shape [batch_size, n_neighbors]
+    :param house_time_features: float Tensor of shape [batch_size, 1, house_time_dim] 
+    :param memories: float Tensor of shape [batch_size, n_sensors, memory_dim]
+    :param sensors_time_features: float Tensor of shape [batch_size, n_neighbors, time_dim]
     :return:
     attn_output: float Tensor of shape [1, batch_size, n_node_features]
-    attn_output_weights: [batch_size, 1, n_neighbors]
+    attn_output_weights: [batch_size, 1, n_sensors]
     """
+
+    house_time_features = house_time_features.float()
+    house_state = house_state[np.newaxis,:]
+    house_time_features = house_time_features[np.newaxis, np.newaxis, :]
+    memories = memories[np.newaxis,:]
 
     src_node_features_unrolled = torch.unsqueeze(house_state, dim=1)
 
     query = torch.cat([src_node_features_unrolled, house_time_features], dim=2)
-    key = torch.cat([sensors_features, sensors_time_features], dim=2)
+    key = torch.cat([memories, sensors_time_features], dim=2)
 
     #Reshape tensors so to expected shape by multi head attention
     query = query.permute([1, 0, 2])  # [1, batch_size, num_of_features]
@@ -126,9 +133,7 @@ class TemporalAttentionLayer(torch.nn.Module):
 
     attn_output = attn_output.squeeze()
     attn_output_weights = attn_output_weights.squeeze()
-
     # Skip connection with temporal attention over neighborhood and the features of the node itself
-    attn_output = self.merger(attn_output, house_state)
-
+    attn_output = self.merger(attn_output[np.newaxis,:], house_state)
     return attn_output, attn_output_weights
 
