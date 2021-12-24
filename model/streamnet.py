@@ -6,6 +6,7 @@ from torch import nn
 from utils.utils import TemporalAttentionLayer
 from model.time_encoding import TimeEncode
 from collections import defaultdict
+from utils.focal_loss import WeightedFocalLoss, FocalLoss
 
 
 class StreamNet(torch.nn.Module):
@@ -30,7 +31,9 @@ class StreamNet(torch.nn.Module):
         self.device = device
         self.num_heads = num_heads
         self.dropout = dropout
-        self.loss_fn = nn.CrossEntropyLoss()
+        #self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = WeightedFocalLoss(num_classes = self.num_classes)
+        #self.loss_fn = FocalLoss()
         self.mean_time_shift_events = mean_time_shift_events
         self.std_time_shift_events = std_time_shift_events
         self.recent_events= {}
@@ -169,8 +172,10 @@ class StreamNet(torch.nn.Module):
 def get_memory_function(memory_dim, event_dim, time_dim):
     # just a GRU that takes in old memory and concatenation of sensor event + encoding of
     # elapsed time since the last event happened
+    #return nn.Transformer(nhead=16, num_encoder_layers=12)
     return nn.GRUCell(input_size=time_dim + event_dim,
                                      hidden_size=memory_dim)
+
 
     
 def get_embedding_function(memory_dim, house_state_dim, embedding_dim):

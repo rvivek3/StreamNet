@@ -7,16 +7,19 @@ import torch
 import numpy as np
 import pickle
 from pathlib import Path
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, precision_recall_fscore_support
 from torch import nn
 
 from model.streamnet import StreamNet
 from utils.data_processing import get_data, compute_time_statistics
 
+import subprocess
+subprocess.Popen('caffeinate')
+
 ### Argument and global variables
 parser = argparse.ArgumentParser('StreamNet Activity Recognition Training')
 parser.add_argument('-d', '--data', type=str, help='Dataset name',
-                    default='milan_graph_with_hour')
+                    default='milan_graph_binary_normalized')
 parser.add_argument('--bs', type=int, default=200, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
@@ -25,11 +28,11 @@ parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
 parser.add_argument('--embedding_dim', type=int, default=100, help='Dimensions of the node embedding')
-parser.add_argument('--time_dim', type=int, default=64, help='Dimensions of the time embedding')
-parser.add_argument('--memory_dim', type=int, default=64, help='Dimensions of the time embedding')
-parser.add_argument('--house_state_dim', type=int, default=64, help='Dimensions of the time embedding')
+parser.add_argument('--time_dim', type=int, default=2, help='Dimensions of the time embedding')
+parser.add_argument('--memory_dim', type=int, default=16, help='Dimensions of the time embedding')
+parser.add_argument('--house_state_dim', type=int, default=32, help='Dimensions of the time embedding')
 parser.add_argument('--event_dim', type=int, default=3, help='Dimensions of summary of sensor event')
-parser.add_argument('--num_classes', type=int, default=15, help='Number of activity types')
+parser.add_argument('--num_classes', type=int, default=2, help='Number of activity types')
 parser.add_argument('--backprop_every', type=int, default=10, help='Number of batches to process before each backprop')
 parser.add_argument('--batch_duration', type=int, default=25, help='Duration of activity summarized by each batch')
 
@@ -79,8 +82,10 @@ streamnet = StreamNet(memory_dim = MEMORY_DIM, embedding_dim = EMBEDDING_DIM, \
     std_time_shift_events = std_time_shift_events, 
     device = device, n_sensors = full_data.n_unique_sensors, house_time_dim=6)
 
+
 optimizer = torch.optim.Adam(streamnet.parameters(), lr=LEARNING_RATE)
 
+#print(streamnet.state_dict().keys())
 
 streamnet = streamnet.to(device)
 num_instance = len(train_data.sensors)
@@ -96,7 +101,17 @@ torch.autograd.set_detect_anomaly(True)
 losses = []
 soft = nn.Softmax(dim = 0)
 
+dont_train = False
+#streamnet.load_state_dict(torch.load("saved_models/streamnet_latest_act_detection"))
+
 for epoch in range(args.n_epoch):
+
+  train_f1s = []
+  train_losses = []
+  val_f1s = []
+  val_losses = []
+
+  tic = time.perf_counter()
   streamnet.train()
   streamnet.init_memory()
   loss = 0
@@ -104,7 +119,9 @@ for epoch in range(args.n_epoch):
   last_batch_time = 0
   most_recent_event = None
   current_batch = 0
-  for event in train_data.event_idxs:
+  for event in range(len(train_data.event_idxs)):
+    if dont_train:
+      continue
 
     # Queue events for each batch
     if train_data.timestamps[event] - last_batch_time < args.batch_duration:
@@ -118,7 +135,10 @@ for epoch in range(args.n_epoch):
       most_recent_event = event
       last_batch_time = train_data.timestamps[most_recent_event]
       pred = streamnet.process_batch(train_data, node_features, most_recent_event)
-      target = torch.tensor([train_data.labels[most_recent_event]]).long()
+
+      
+      target = torch.tensor([train_data.labels[most_recent_event]]).float() # for focal
+      #target = torch.tensor([train_data.labels[most_recent_event]]).long() # for cross entropy
 
       loss += streamnet.loss_fn(pred[np.newaxis,:], target)
       # for every backprop_every events, do backprop and then reset gradients and loss
@@ -128,9 +148,9 @@ for epoch in range(args.n_epoch):
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-
-        if current_batch % 100 == 0:
-          loss_accum /= 100
+        
+        if current_batch % 10 == 0:
+          loss_accum /= 10
           losses.append(loss_accum)
           loss_accum = 0
 
@@ -141,9 +161,12 @@ for epoch in range(args.n_epoch):
       sensor = train_data.sensors[event]
       streamnet.queue_event(sensor, event)
       last_batch_time = train_data.timestamps[most_recent_event]
-  print(len(train_data.event_idxs))
-  print(current_batch)
-  print("Epoch {}: , Last loss {}".format(epoch, sum(losses)/len(losses)))
+  # print(len(train_data.event_idxs))
+  # print(current_batch)
+  toc = time.perf_counter()
+
+  if not dont_train:
+    print("Epoch {}: Duration {}, Averaged Loss: {}".format(epoch, toc - tic, sum(losses)/len(losses)))
   
   losses = []
 
@@ -169,9 +192,15 @@ for epoch in range(args.n_epoch):
       most_recent_event = event
       continue
     else:
+      
       most_recent_event = event
       used_events.append(most_recent_event)
       pred = streamnet.process_batch(train_data, node_features, most_recent_event)
+
+      # just for logging
+      target = torch.tensor([train_data.labels[most_recent_event]]).float() 
+      losses.append(streamnet.loss_fn(pred[np.newaxis,:], target))
+
       pred = np.array([torch.argmax(soft(pred.detach()))])
       preds = np.concatenate((preds, pred))
 
@@ -179,10 +208,17 @@ for epoch in range(args.n_epoch):
       sensor = train_data.sensors[event]
       streamnet.queue_event(sensor, event)
       last_batch_time = train_data.timestamps[most_recent_event]
+
   print(np.unique(preds))
   targets = np.array(train_data.labels[used_events]) 
   preds = preds[1:]
   train_f1 = f1_score(targets, preds, average=None)
+
+  # log
+  train_f1s.append(train_f1)
+  train_losses.append(sum(losses)/len(losses))
+
+
   print("Classes seen in Training: ")
   print(np.unique(targets))
   print("Train F1")
@@ -195,6 +231,7 @@ for epoch in range(args.n_epoch):
   streamnet.clear_recent_events()
   preds = np.zeros(1)
   used_events = []
+  losses = []
   
   for event in range(len(val_data.event_idxs)):
 
@@ -208,6 +245,11 @@ for epoch in range(args.n_epoch):
       most_recent_event = event
       used_events.append(most_recent_event)
       pred = streamnet.process_batch(val_data, node_features, most_recent_event)
+
+      # just for logging
+      target = torch.tensor([train_data.labels[most_recent_event]]).float() 
+      losses.append(streamnet.loss_fn(pred[np.newaxis,:], target))
+
       pred = np.array([torch.argmax(soft(pred.detach()))])
       preds = np.concatenate((preds, pred))
 
@@ -219,10 +261,33 @@ for epoch in range(args.n_epoch):
   targets = np.array(val_data.labels[used_events]) 
   preds = preds[1:]
   val_f1 = f1_score(targets, preds, average=None)
+  prec, recall, f1_beta, support = precision_recall_fscore_support(targets, preds)
   print("Classes seen in validation: ")
   print(np.unique(targets))
   print("Validation F1")
   print(val_f1)
+  print("Prec:")
+  print(prec)
+  print("recall:")
+  print(recall)
+  print("F1_beta")
+  print(f1_beta)
+  print("support")
+  print(support)
+  # log
+  val_f1s.append(val_f1)
+  val_losses.append(sum(losses)/len(losses))
+
+  with open('train_losses.pkl', 'wb') as f:
+    pickle.dump(train_losses, f)
+  with open('val_losses.pkl', 'wb') as f:
+    pickle.dump(val_losses, f)
+  with open('train_f1s.pkl', 'wb') as f:
+    pickle.dump(train_f1s, f)
+  with open('val_f1s.pkl', 'wb') as f:
+    pickle.dump(val_f1s, f)
+  
+  torch.save(streamnet.state_dict(), "saved_models/streamnet_latest_act_detection_time_dim_2")
 
     
 

@@ -35,8 +35,9 @@ def get_data(dataset_name):
   ### Load data and train val test split
   graph_df = pd.read_csv('data/processed_{}.csv'.format(dataset_name))
   node_features = np.load('data/{}_node.npy'.format(dataset_name)) 
-  print(node_features.shape)
-  val_time, test_time = list(np.quantile(graph_df.ts, [0.1, 0.2])) # should be .7, .85 for 70, 15, 15 split
+  #print(node_features.shape)
+  val_time, test_time = list(np.quantile(graph_df.ts, [0.7, 0.85])) # should be .7, .85 for 70, 15, 15 split
+  #print(val_time, test_time)
   sensors = graph_df.sensor.values # sensor idx for each event in order
   event_idxs = graph_df.idx.values
   labels = graph_df.label.values
@@ -57,13 +58,14 @@ def get_data(dataset_name):
 
   # For train we keep edges happening before the validation time
   train_mask = timestamps <= val_time
+  #train_mask = np.logical_and(timestamps >= 14260, timestamps < val_time) #get rid of this!
 
   train_data = Data(sensors[train_mask], timestamps[train_mask],
                     event_idxs[train_mask], labels[train_mask],
                     hours[train_mask], minutes[train_mask],
                     seconds[train_mask])
 
-
+  #print(train_data.labels)
   val_mask = np.logical_and(timestamps <= test_time, timestamps > val_time)
   test_mask = timestamps > test_time
 

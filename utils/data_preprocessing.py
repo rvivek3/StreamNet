@@ -54,7 +54,7 @@ def run(dataset):
 
 parser = argparse.ArgumentParser('Interface for StreamNet data preprocessing')
 parser.add_argument('--data', type=str, help='Dataset name',
-                    default='milan_graph_with_hour')
+                    default='milan_graph_binary_normalized')
 
 args = parser.parse_args()
 
