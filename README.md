@@ -1,6 +1,6 @@
 # StreamNet
 
-![Model Architecture](https://github.com/rvivek3/StreamNet/blob/master/streamnet.png)
+![Model Architecture](https://github.com/rvivek3/StreamNet/blob/master/architecture.png)
 
 This is a novel deep learning architecture for processing multivariate time series, inspired by Temporal Graph Networks (https://github.com/twitter-research/tgn). Much of the code is original or has been heavily changed from their repo, though portions (e.g. Focal Loss, Temporal Attention layer) remains the same. This architecture was designed for human activity recognition in smart home environments.
 
